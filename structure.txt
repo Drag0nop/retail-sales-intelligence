@@ -1,0 +1,37 @@
+retail-sales-intelligence/
+│
+├── app.py
+├── requirements.txt
+├── README.md
+├── .gitignore
+│
+├── data/
+│   └── sample_sales.csv
+│
+├── src/
+│   ├── __init__.py
+│   ├── data_loader.py
+│   ├── data_cleaning.py
+│   ├── analytics.py
+│   ├── visualizations.py
+│   └── report_generator.py
+│
+├── database/
+│   ├── __init__.py
+│   └── db.py
+│
+├── components/
+│   ├── __init__.py
+│   ├── sidebar.py
+│   ├── kpi_cards.py
+│   └── charts.py
+│
+├── assets/
+│   └── style.css
+│
+├── tests/
+│   ├── test_cleaning.py
+│   └── test_analytics.py
+│
+└── outputs/
+    └── reports/
