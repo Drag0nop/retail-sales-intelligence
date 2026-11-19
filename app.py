@@ -1,174 +1,360 @@
-import streamlit as st
+
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
+import streamlit as st
 
-st.set_page_config(page_title="Retail Sales Intelligence", page_icon="📊", layout="wide")
 
-st.title("📊 Retail Sales Intelligence")
-st.caption("Interactive sales, profit, customer, product and shipping analysis")
-
-uploaded_file = st.sidebar.file_uploader("Upload sample_sales.csv", type=["csv"])
-
-if uploaded_file is None:
-    st.info("Upload your sample_sales.csv file using the sidebar to open the dashboard.")
-    st.stop()
-
-try:
-    df = pd.read_csv(uploaded_file, encoding="utf-8")
-except UnicodeDecodeError:
-    uploaded_file.seek(0)
-    df = pd.read_csv(uploaded_file, encoding="latin1")
-
-# Standardize column names
-df.columns = (
-    df.columns.astype(str).str.strip().str.lower()
-    .str.replace(" ", "_", regex=False)
+# -----------------------------
+# PAGE CONFIGURATION
+# -----------------------------
+st.set_page_config(
+    page_title="Retail Sales Dashboard",
+    page_icon="📊",
+    layout="wide"
 )
-df = df.rename(columns={"sub-category": "sub_category"})
 
-required = [
-    "order_id", "order_date", "ship_date", "ship_mode", "customer_id",
-    "segment", "region", "category", "sub_category", "product_name",
-    "sales", "quantity", "discount", "profit"
+st.title("📊 Retail Sales Dashboard")
+st.write("Analyze sales performance, customers, and product categories.")
+
+
+# -----------------------------
+# LOAD DATA
+# -----------------------------
+BASE_DIR = Path(__file__).resolve().parent
+DATA_FILE = BASE_DIR / "retail_sales_cleaned.csv"
+
+if not DATA_FILE.exists():
+    DATA_FILE = BASE_DIR / "retail.csv"
+
+
+@st.cache_data
+def load_data(path):
+
+    try:
+        df = pd.read_csv(path, encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        df = pd.read_csv(path, encoding="cp1252")
+
+    df.columns = (
+        df.columns.astype(str)
+        .str.strip()
+        .str.lower()
+        .str.replace(r"[\s-]+", "_", regex=True)
+    )
+
+    df["order_date"] = pd.to_datetime(
+        df["order_date"],
+        errors="coerce",
+        dayfirst=True
+    )
+
+    df["sales"] = pd.to_numeric(
+        df["sales"], errors="coerce"
+    )
+
+    df["quantity"] = pd.to_numeric(
+        df["quantity"], errors="coerce"
+    )
+
+    df = df.dropna(
+        subset=["order_date", "sales", "quantity"]
+    )
+
+    return df
+
+
+if not DATA_FILE.exists():
+    st.error("Dataset not found. Please place the CSV file beside app.py.")
+    st.stop()
+
+df = load_data(str(DATA_FILE))
+
+if df.empty:
+    st.error("No valid records found in the dataset.")
+    st.stop()
+
+
+# -----------------------------
+# SIDEBAR FILTERS
+# -----------------------------
+st.sidebar.header("Filters")
+
+regions = st.sidebar.multiselect(
+    "Select Region",
+    sorted(df["region"].dropna().unique()),
+    default=sorted(df["region"].dropna().unique())
+)
+
+categories = st.sidebar.multiselect(
+    "Select Category",
+    sorted(df["category"].dropna().unique()),
+    default=sorted(df["category"].dropna().unique())
+)
+
+segments = st.sidebar.multiselect(
+    "Select Customer Segment",
+    sorted(df["segment"].dropna().unique()),
+    default=sorted(df["segment"].dropna().unique())
+)
+
+date_range = st.sidebar.date_input(
+    "Select Date Range",
+    value=(
+        df["order_date"].min().date(),
+        df["order_date"].max().date()
+    )
+)
+
+
+# -----------------------------
+# FILTER DATA
+# -----------------------------
+filtered_df = df.copy()
+
+if len(date_range) == 2:
+
+    start_date, end_date = date_range
+
+    filtered_df = filtered_df[
+        filtered_df["order_date"].dt.date.between(
+            start_date, end_date
+        )
+    ]
+
+filtered_df = filtered_df[
+    filtered_df["region"].isin(regions)
+    & filtered_df["category"].isin(categories)
+    & filtered_df["segment"].isin(segments)
 ]
-missing = [col for col in required if col not in df.columns]
-if missing:
-    st.error("The uploaded file is missing these required columns: " + ", ".join(missing))
+
+if filtered_df.empty:
+    st.warning("No data available for the selected filters.")
     st.stop()
 
-# Convert columns safely
-for col in ["order_date", "ship_date"]:
-    df[col] = pd.to_datetime(df[col], errors="coerce")
-for col in ["sales", "quantity", "discount", "profit"]:
-    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-df = df.dropna(subset=["order_date", "sales", "quantity", "discount", "profit"]).copy()
-df["shipping_days"] = (df["ship_date"] - df["order_date"]).dt.days
-df["year_month"] = df["order_date"].dt.to_period("M").astype(str)
-df["year"] = df["order_date"].dt.year
+# -----------------------------
+# KPI METRICS
+# -----------------------------
+total_sales = filtered_df["sales"].sum()
 
-# Sidebar filters
-st.sidebar.header("Dashboard Filters")
+total_orders = filtered_df["order_id"].nunique()
 
-def multi_filter(label, column):
-    values = sorted(df[column].dropna().astype(str).unique().tolist())
-    selected = st.sidebar.multiselect(label, values, default=values)
-    return selected
+total_customers = filtered_df["customer_id"].nunique()
 
-regions = multi_filter("Region", "region")
-categories = multi_filter("Category", "category")
-segments = multi_filter("Customer Segment", "segment")
-ship_modes = multi_filter("Ship Mode", "ship_mode")
+average_order_value = (
+    filtered_df.groupby("order_id")["sales"].sum().mean()
+)
 
-filtered = df[
-    df["region"].astype(str).isin(regions)
-    & df["category"].astype(str).isin(categories)
-    & df["segment"].astype(str).isin(segments)
-    & df["ship_mode"].astype(str).isin(ship_modes)
-].copy()
+st.subheader("Business Overview")
 
-if filtered.empty:
-    st.warning("No records match the selected filters. Change the filters in the sidebar.")
-    st.stop()
+col1, col2, col3, col4 = st.columns(4)
 
-# KPI cards
-total_sales = filtered["sales"].sum()
-total_profit = filtered["profit"].sum()
-orders = filtered["order_id"].nunique()
-customers = filtered["customer_id"].nunique()
-avg_discount = filtered["discount"].mean()
+col1.metric(
+    "Total Sales",
+    f"₹{total_sales:,.2f}"
+)
 
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Total Sales", f"${total_sales:,.2f}")
-c2.metric("Total Profit", f"${total_profit:,.2f}")
-c3.metric("Orders", f"{orders:,}")
-c4.metric("Customers", f"{customers:,}")
-c5.metric("Average Discount", f"{avg_discount:.1%}")
+col2.metric(
+    "Total Orders",
+    f"{total_orders:,}"
+)
+
+col3.metric(
+    "Total Customers",
+    f"{total_customers:,}"
+)
+
+col4.metric(
+    "Average Order Value",
+    f"₹{average_order_value:,.2f}"
+)
+
 
 st.divider()
 
-# Sales and profit trends
-left, right = st.columns(2)
-with left:
-    monthly = filtered.groupby("year_month", as_index=False)["sales"].sum()
-    fig = px.line(monthly, x="year_month", y="sales", markers=True,
-                  title="Monthly Sales Trend", labels={"year_month": "Month", "sales": "Sales"})
-    st.plotly_chart(fig, use_container_width=True)
 
-with right:
-    category_sales = filtered.groupby("category", as_index=False)["sales"].sum().sort_values("sales", ascending=False)
-    fig = px.bar(category_sales, x="category", y="sales", title="Sales by Category",
-                 labels={"category": "Category", "sales": "Sales"}, text_auto=".2s")
-    st.plotly_chart(fig, use_container_width=True)
+# -----------------------------
+# SALES TREND
+# -----------------------------
+st.subheader("Sales Over Time")
 
-left, right = st.columns(2)
-with left:
-    region_profit = filtered.groupby("region", as_index=False)["profit"].sum().sort_values("profit", ascending=False)
-    fig = px.bar(region_profit, x="region", y="profit", title="Profit by Region",
-                 labels={"region": "Region", "profit": "Profit"}, text_auto=".2s")
-    st.plotly_chart(fig, use_container_width=True)
+monthly_sales = (
+    filtered_df
+    .assign(month=filtered_df["order_date"].dt.to_period("M").astype(str))
+    .groupby("month", as_index=False)["sales"]
+    .sum()
+)
 
-with right:
-    segment_sales = filtered.groupby("segment", as_index=False)["sales"].sum().sort_values("sales", ascending=False)
-    fig = px.pie(segment_sales, names="segment", values="sales", title="Sales by Customer Segment")
-    st.plotly_chart(fig, use_container_width=True)
+fig = px.line(
+    monthly_sales,
+    x="month",
+    y="sales",
+    markers=True,
+    title="Monthly Sales Trend"
+)
 
-# Product performance
-left, right = st.columns(2)
-with left:
-    top_products = (filtered.groupby("product_name", as_index=False)["sales"].sum()
-                    .nlargest(10, "sales").sort_values("sales"))
-    fig = px.bar(top_products, x="sales", y="product_name", orientation="h",
-                 title="Top 10 Products by Sales", labels={"sales": "Sales", "product_name": "Product"})
-    st.plotly_chart(fig, use_container_width=True)
+fig.update_layout(
+    xaxis_title="Month",
+    yaxis_title="Sales (₹)",
+    template="plotly_white"
+)
 
-with right:
-    sub_profit = filtered.groupby("sub_category", as_index=False)["profit"].sum().sort_values("profit")
-    fig = px.bar(sub_profit, x="profit", y="sub_category", orientation="h",
-                 title="Profit by Sub-Category", labels={"profit": "Profit", "sub_category": "Sub-Category"},
-                 color="profit", color_continuous_scale="RdYlGn")
-    st.plotly_chart(fig, use_container_width=True)
+fig.update_yaxes(tickprefix="₹", tickformat="~s")
 
-# Discount, quantity and profit relationships
-left, right = st.columns(2)
-with left:
-    fig = px.scatter(filtered, x="discount", y="profit", color="category",
-                     hover_data=["product_name", "sales"], title="Discount vs Profit",
-                     labels={"discount": "Discount", "profit": "Profit"})
-    st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 
-with right:
-    numeric_corr = filtered[["sales", "quantity", "discount", "profit"]].corr().round(2)
-    fig = px.imshow(numeric_corr, text_auto=True, color_continuous_scale="RdBu_r",
-                    zmin=-1, zmax=1, title="Correlation Heatmap")
-    st.plotly_chart(fig, use_container_width=True)
 
-# Shipping and data quality
-st.subheader("Shipping Analysis")
-shipping = filtered["shipping_days"].dropna()
-if not shipping.empty:
-    a, b = st.columns(2)
-    a.metric("Average Shipping Time", f"{shipping.mean():.1f} days")
-    b.metric("Median Shipping Time", f"{shipping.median():.0f} days")
-    ship_counts = filtered["shipping_days"].value_counts().sort_index().reset_index()
-    ship_counts.columns = ["shipping_days", "records"]
-    fig = px.bar(ship_counts, x="shipping_days", y="records", title="Shipping Duration Distribution",
-                 labels={"shipping_days": "Shipping Days", "records": "Records"})
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("Shipping duration is unavailable for the selected records.")
+# -----------------------------
+# CATEGORY AND REGION ANALYSIS
+# -----------------------------
+st.subheader("Sales Analysis")
 
-st.subheader("Key Business Metrics")
-m1, m2, m3 = st.columns(3)
-m1.metric("Average Order Sales", f"${filtered.groupby('order_id')['sales'].sum().mean():,.2f}")
-m2.metric("Total Loss-Making Rows", f"{(filtered['profit'] < 0).sum():,}")
-m3.metric("Distinct Products", f"{filtered['product_name'].nunique():,}")
+col1, col2 = st.columns(2)
 
-st.subheader("Filtered Data")
-st.dataframe(filtered, use_container_width=True, hide_index=True)
+with col1:
 
-csv = filtered.to_csv(index=False).encode("utf-8")
-st.download_button("Download filtered data as CSV", data=csv,
-                   file_name="retail_sales_filtered.csv", mime="text/csv")
+    category_sales = (
+        filtered_df.groupby("category", as_index=False)["sales"]
+        .sum()
+        .sort_values("sales", ascending=False)
+    )
 
-st.caption("Note: Dashboard results reflect the uploaded dataset and currently selected filters. Correlation does not establish causation.")
+    fig = px.bar(
+        category_sales,
+        x="category",
+        y="sales",
+        title="Sales by Category",
+        color="category"
+    )
+
+    fig.update_layout(
+        template="plotly_white",
+        yaxis_title="Sales (₹)"
+    )
+
+    fig.update_yaxes(tickprefix="₹", tickformat="~s")
+
+    st.plotly_chart(fig, width="stretch")
+
+
+with col2:
+
+    region_sales = (
+        filtered_df.groupby("region", as_index=False)["sales"]
+        .sum()
+        .sort_values("sales", ascending=False)
+    )
+
+    fig = px.pie(
+        region_sales,
+        names="region",
+        values="sales",
+        hole=0.4,
+        title="Sales by Region"
+    )
+
+    fig.update_traces(
+        hovertemplate="%{label}<br>₹%{value:,.2f}<extra></extra>"
+    )
+
+    fig.update_layout(template="plotly_white")
+
+    st.plotly_chart(fig, width="stretch")
+
+
+# -----------------------------
+# CUSTOMER SEGMENT ANALYSIS
+# -----------------------------
+st.subheader("Customer Analysis")
+
+col1, col2 = st.columns(2)
+
+with col1:
+
+    segment_sales = (
+        filtered_df.groupby("segment", as_index=False)["sales"]
+        .sum()
+    )
+
+    fig = px.bar(
+        segment_sales,
+        x="segment",
+        y="sales",
+        title="Sales by Customer Segment",
+        color="segment"
+    )
+
+    fig.update_layout(
+        template="plotly_white",
+        yaxis_title="Sales (₹)"
+    )
+
+    fig.update_yaxes(tickprefix="₹", tickformat="~s")
+
+    st.plotly_chart(fig, width="stretch")
+
+
+with col2:
+
+    top_customers = (
+        filtered_df.groupby("customer_name", as_index=False)["sales"]
+        .sum()
+        .nlargest(10, "sales")
+        .sort_values("sales")
+    )
+
+    fig = px.bar(
+        top_customers,
+        x="sales",
+        y="customer_name",
+        orientation="h",
+        title="Top 10 Customers"
+    )
+
+    fig.update_layout(
+        template="plotly_white",
+        xaxis_title="Sales (₹)"
+    )
+
+    fig.update_xaxes(tickprefix="₹", tickformat="~s")
+
+    st.plotly_chart(fig, width="stretch")
+
+
+# -----------------------------
+# DATA TABLE
+# -----------------------------
+st.divider()
+
+st.subheader("Dataset")
+
+st.write(f"Total Records: {len(filtered_df):,}")
+
+st.dataframe(
+    filtered_df,
+    width="stretch",
+    hide_index=True
+)
+
+
+# -----------------------------
+# DOWNLOAD DATA
+# -----------------------------
+csv = filtered_df.to_csv(index=False).encode("utf-8")
+
+st.download_button(
+    label="Download Filtered Dataset",
+    data=csv,
+    file_name="retail_sales_filtered.csv",
+    mime="text/csv"
+)
+
+
+# -----------------------------
+# FOOTER
+# -----------------------------
+st.caption(
+    f"Retail Sales Dashboard | Dataset: {DATA_FILE.name}"
+)
